@@ -4,15 +4,27 @@
   "main": "index.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web"
   },
   "dependencies": {
+    "@react-navigation/bottom-tabs": "^7.15.9",
+    "@react-navigation/native": "^7.2.2",
+    "@react-navigation/stack": "^7.8.10",
     "expo": "~54.0.33",
+    "expo-camera": "~17.0.10",
+    "expo-constants": "~18.0.13",
+    "expo-file-system": "~19.0.21",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
+    "matrix-js-sdk": "^41.4.0-rc.0",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.0"
   },
   "private": true
 }
