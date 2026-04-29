@@ -1,212 +1,354 @@
-// Web-compatible mock database service
-// This uses localStorage for web instead of SQLite
+const KEYS = {
+  contacts: 'familychat_contacts',
+  messages: 'familychat_messages',
+  family: 'familychat_family',
+  devices: 'familychat_devices',
+  invites: 'familychat_child_invites',
+  parentAccounts: 'familychat_parent_accounts'
+};
+
+const DEVICE_ID = 'current_device';
 
 class DatabaseService {
   constructor() {
-    this.db = null;
     this.isWeb = typeof window !== 'undefined';
   }
 
   async initialize() {
-    try {
-      if (this.isWeb) {
-        // Initialize localStorage for web
-        this.initializeLocalStorage();
-        console.log('Web database initialized with localStorage');
-      } else {
-        // Use real SQLite for mobile
-        const SQLite = require('expo-sqlite');
-        this.db = await SQLite.openDatabaseAsync('familychat.db');
-        await this.createTables();
+    Object.values(KEYS).forEach(key => {
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, JSON.stringify([]));
       }
-    } catch (error) {
-      console.error('Database initialization error:', error);
-      throw error;
-    }
+    });
   }
 
-  initializeLocalStorage() {
-    if (!localStorage.getItem('familychat_contacts')) {
-      localStorage.setItem('familychat_contacts', JSON.stringify([]));
-    }
-    if (!localStorage.getItem('familychat_messages')) {
-      localStorage.setItem('familychat_messages', JSON.stringify([]));
-    }
-    if (!localStorage.getItem('familychat_family')) {
-      localStorage.setItem('familychat_family', JSON.stringify([]));
-    }
-    if (!localStorage.getItem('familychat_devices')) {
-      localStorage.setItem('familychat_devices', JSON.stringify([]));
-    }
+  read(key) {
+    return JSON.parse(localStorage.getItem(key) || '[]');
   }
 
-  async createTables() {
-    // Tables are created lazily when needed for web
-    if (!this.isWeb && this.db) {
-      const createContactsTable = `
-        CREATE TABLE IF NOT EXISTS contacts (
-          id TEXT PRIMARY KEY,
-          display_name TEXT NOT NULL,
-          avatar_path TEXT,
-          is_child INTEGER DEFAULT 0,
-          is_safe_list INTEGER DEFAULT 0,
-          matrix_user_id TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-      `;
+  write(key, value) {
+    localStorage.setItem(key, JSON.stringify(value));
+  }
 
-      const createMessagesTable = `
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          sender_id TEXT NOT NULL,
-          recipient_id TEXT NOT NULL,
-          body TEXT NOT NULL,
-          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-          status TEXT DEFAULT 'sent',
-          media_path TEXT,
-          matrix_event_id TEXT,
-          FOREIGN KEY (sender_id) REFERENCES contacts (id),
-          FOREIGN KEY (recipient_id) REFERENCES contacts (id)
-        );
-      `;
-
-      const createFamilyTable = `
-        CREATE TABLE IF NOT EXISTS family (
-          id TEXT PRIMARY KEY,
-          family_name TEXT NOT NULL,
-          parent_matrix_user_id TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-      `;
-
-      const createDeviceTable = `
-        CREATE TABLE IF NOT EXISTS devices (
-          id TEXT PRIMARY KEY,
-          contact_id TEXT NOT NULL,
-          matrix_device_id TEXT,
-          matrix_access_token TEXT,
-          is_active INTEGER DEFAULT 1,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (contact_id) REFERENCES contacts (id)
-        );
-      `;
-
-      try {
-        await this.db.execAsync(createContactsTable);
-        await this.db.execAsync(createMessagesTable);
-        await this.db.execAsync(createFamilyTable);
-        await this.db.execAsync(createDeviceTable);
-        console.log('Database tables created successfully');
-      } catch (error) {
-        console.error('Error creating tables:', error);
-        throw error;
-      }
-    }
+  normalizeContact(contact) {
+    return contact ? {
+      ...contact,
+      is_child: Boolean(contact.is_child),
+      is_safe_list: Boolean(contact.is_safe_list),
+      approval_status: contact.approval_status || (contact.is_safe_list ? 'approved' : 'blocked')
+    } : null;
   }
 
   async addContact(contact) {
-    const { id, displayName, avatarPath, isChild, isSafeList, matrixUserId } = contact;
-    
     try {
-      if (this.isWeb) {
-        const contacts = JSON.parse(localStorage.getItem('familychat_contacts') || '[]');
-        const newContact = {
-          id,
-          display_name: displayName,
-          avatar_path: avatarPath,
-          is_child: isChild ? 1 : 0,
-          is_safe_list: isSafeList ? 1 : 0,
-          matrix_user_id: matrixUserId,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        const existingIndex = contacts.findIndex(c => c.id === id);
-        if (existingIndex >= 0) {
-          contacts[existingIndex] = newContact;
-        } else {
-          contacts.push(newContact);
-        }
-        
-        localStorage.setItem('familychat_contacts', JSON.stringify(contacts));
-        return { success: true };
+      const contacts = this.read(KEYS.contacts);
+      const isSafeList = contact.isSafeList ?? Boolean(contact.is_safe_list ?? true);
+      const newContact = {
+        id: contact.id,
+        display_name: contact.displayName ?? contact.display_name,
+        avatar_path: contact.avatarPath ?? contact.avatar_path ?? null,
+        is_child: (contact.isChild ?? Boolean(contact.is_child)) ? 1 : 0,
+        is_safe_list: isSafeList ? 1 : 0,
+        approval_status: contact.approvalStatus || contact.approval_status || (isSafeList ? 'approved' : 'blocked'),
+        handle: contact.handle || null,
+        parent_id: contact.parentId ?? contact.parent_id ?? null,
+        matrix_user_id: contact.matrixUserId ?? contact.matrix_user_id ?? null,
+        created_at: contact.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const existingIndex = contacts.findIndex(item => item.id === newContact.id);
+      if (existingIndex >= 0) {
+        contacts[existingIndex] = { ...contacts[existingIndex], ...newContact };
       } else {
-        await this.db.runAsync(
-          `INSERT OR REPLACE INTO contacts (id, display_name, avatar_path, is_child, is_safe_list, matrix_user_id) 
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [id, displayName, avatarPath, isChild ? 1 : 0, isSafeList ? 1 : 0, matrixUserId]
-        );
-        return { success: true };
+        contacts.push(newContact);
       }
+
+      this.write(KEYS.contacts, contacts);
+      return { success: true };
     } catch (error) {
       console.error('Error adding contact:', error);
       return { success: false, error: error.message };
     }
   }
 
-  async getSafeListContacts() {
+  async updateContact(contact) {
     try {
-      if (this.isWeb) {
-        const contacts = JSON.parse(localStorage.getItem('familychat_contacts') || '[]');
-        return contacts
-          .filter(contact => contact.is_safe_list === 1)
-          .map(contact => ({
-            ...contact,
-            is_child: Boolean(contact.is_child),
-            is_safe_list: Boolean(contact.is_safe_list)
-          }))
-          .sort((a, b) => a.display_name.localeCompare(b.display_name));
-      } else {
-        const contacts = await this.db.getAllAsync(
-          `SELECT * FROM contacts WHERE is_safe_list = 1 ORDER BY display_name`
-        );
-        return contacts.map(contact => ({
-          ...contact,
-          is_child: Boolean(contact.is_child),
-          is_safe_list: Boolean(contact.is_safe_list)
-        }));
-      }
+      const contacts = this.read(KEYS.contacts);
+      const index = contacts.findIndex(item => item.id === contact.id);
+      if (index === -1) return { success: false, error: 'Contact not found' };
+
+      const isSafeList = contact.isSafeList ?? Boolean(contact.is_safe_list);
+      const isChild = contact.isChild ?? Boolean(contact.is_child);
+      contacts[index] = {
+        ...contacts[index],
+        display_name: contact.displayName ?? contact.display_name,
+        avatar_path: contact.avatarPath ?? contact.avatar_path ?? null,
+        is_child: isChild ? 1 : 0,
+        is_safe_list: isSafeList ? 1 : 0,
+        approval_status: contact.approvalStatus || contact.approval_status || (isSafeList ? 'approved' : 'blocked'),
+        handle: contact.handle || contact.handle === '' ? contact.handle : contacts[index].handle,
+        parent_id: contact.parentId || contacts[index].parent_id,
+        matrix_user_id: contact.matrixUserId,
+        updated_at: new Date().toISOString()
+      };
+      this.write(KEYS.contacts, contacts);
+      return { success: true };
     } catch (error) {
-      console.error('Error getting safe list contacts:', error);
-      return [];
+      console.error('Error updating contact:', error);
+      return { success: false, error: error.message };
     }
   }
 
-  async addMessage(message) {
-    const { id, senderId, recipientId, body, status, mediaPath, matrixEventId } = message;
-    
+  async setContactApproval(contactId, isApproved) {
     try {
-      if (this.isWeb) {
-        const messages = JSON.parse(localStorage.getItem('familychat_messages') || '[]');
-        const newMessage = {
-          id,
-          sender_id: senderId,
-          recipient_id: recipientId,
-          body,
-          status: status || 'sent',
-          media_path: mediaPath,
-          matrix_event_id: matrixEventId,
-          timestamp: new Date().toISOString()
-        };
-        
-        const existingIndex = messages.findIndex(m => m.id === id);
-        if (existingIndex >= 0) {
-          messages[existingIndex] = newMessage;
-        } else {
-          messages.push(newMessage);
-        }
-        
-        localStorage.setItem('familychat_messages', JSON.stringify(messages));
-        return { success: true };
+      const contacts = this.read(KEYS.contacts);
+      const index = contacts.findIndex(item => item.id === contactId);
+      if (index === -1) return { success: false, error: 'Contact not found' };
+
+      contacts[index] = {
+        ...contacts[index],
+        is_safe_list: isApproved ? 1 : 0,
+        approval_status: isApproved ? 'approved' : 'blocked',
+        updated_at: new Date().toISOString()
+      };
+      this.write(KEYS.contacts, contacts);
+      return { success: true };
+    } catch (error) {
+      console.error('Error setting contact approval:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async addFamily(family) {
+    try {
+      const families = this.read(KEYS.family);
+      const newFamily = {
+        id: family.id,
+        family_name: family.familyName,
+        parent_matrix_user_id: family.parentMatrixUserId || null,
+        invite_code: family.inviteCode || null,
+        created_at: new Date().toISOString()
+      };
+
+      const existingIndex = families.findIndex(item => item.id === newFamily.id);
+      if (existingIndex >= 0) {
+        families[existingIndex] = newFamily;
       } else {
-        await this.db.runAsync(
-          `INSERT INTO messages (id, sender_id, recipient_id, body, status, media_path, matrix_event_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [id, senderId, recipientId, body, status || 'sent', mediaPath, matrixEventId]
-        );
-        return { success: true };
+        families.push(newFamily);
       }
+
+      this.write(KEYS.family, families);
+      return { success: true };
+    } catch (error) {
+      console.error('Error adding family:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getFamily() {
+    try {
+      const families = this.read(KEYS.family);
+      return families[families.length - 1] || null;
+    } catch (error) {
+      console.error('Error getting family:', error);
+      return null;
+    }
+  }
+
+  async saveLoginDetails(userId, accessToken, deviceId, userRole, familyName = null) {
+    try {
+      const devices = this.read(KEYS.devices).filter(item => item.id !== DEVICE_ID);
+      devices.push({
+        id: DEVICE_ID,
+        contact_id: userId,
+        matrix_device_id: deviceId,
+        matrix_access_token: accessToken,
+        user_role: userRole,
+        family_name: familyName,
+        is_active: 1,
+        created_at: new Date().toISOString()
+      });
+      this.write(KEYS.devices, devices);
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving login details:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async saveParentAccount(email, password, parentId, displayName) {
+    try {
+      const accounts = this.read(KEYS.parentAccounts).filter(
+        item => item.email !== email.toLowerCase()
+      );
+      accounts.push({
+        email: email.toLowerCase(),
+        password,
+        parent_id: parentId,
+        display_name: displayName,
+        created_at: new Date().toISOString()
+      });
+      this.write(KEYS.parentAccounts, accounts);
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving parent account:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async validateParentAccount(email, password) {
+    try {
+      const account = this.read(KEYS.parentAccounts).find(
+        item => item.email === email.toLowerCase() && item.password === password
+      );
+
+      return account
+        ? { success: true, account }
+        : { success: false, error: 'Invalid email or password' };
+    } catch (error) {
+      console.error('Error validating parent account:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getLoginDetails() {
+    try {
+      const device = this.read(KEYS.devices).find(item => item.id === DEVICE_ID);
+      return device ? {
+        userId: device.contact_id,
+        accessToken: device.matrix_access_token,
+        deviceId: device.matrix_device_id,
+        userRole: device.user_role,
+        familyName: device.family_name
+      } : null;
+    } catch (error) {
+      console.error('Error getting login details:', error);
+      return null;
+    }
+  }
+
+  async deleteLoginDetails() {
+    try {
+      this.write(KEYS.devices, this.read(KEYS.devices).filter(item => item.id !== DEVICE_ID));
+      return { success: true };
+    } catch (error) {
+      console.error('Error deleting login details:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getUserRole() {
+    const details = await this.getLoginDetails();
+    return details?.userRole || null;
+  }
+
+  async getFamilyName() {
+    const details = await this.getLoginDetails();
+    return details?.familyName || null;
+  }
+
+  async saveFamilyName(familyName) {
+    const details = await this.getLoginDetails();
+    if (!details) return { success: false, error: 'No active login' };
+    return this.saveLoginDetails(details.userId, details.accessToken, details.deviceId, details.userRole, familyName);
+  }
+
+  async getUserProfile() {
+    const details = await this.getLoginDetails();
+    if (!details?.userId) return null;
+    return this.normalizeContact(this.read(KEYS.contacts).find(item => item.id === details.userId));
+  }
+
+  async getChildProfiles() {
+    return this.read(KEYS.contacts)
+      .filter(item => item.is_child === 1)
+      .map(item => this.normalizeContact(item))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  }
+
+  async getAllContacts() {
+    return this.read(KEYS.contacts)
+      .map(item => this.normalizeContact(item))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  }
+
+  async getSafeListContacts() {
+    return this.read(KEYS.contacts)
+      .filter(item => item.is_safe_list === 1 && (item.approval_status || 'approved') === 'approved')
+      .map(item => this.normalizeContact(item))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  }
+
+  async createChildInvite(childName = '') {
+    const code = Math.random().toString(36).replace(/[^a-z0-9]/gi, '').padEnd(6, '0').substring(0, 6).toUpperCase();
+    const invites = this.read(KEYS.invites);
+
+    if (invites.some(item => item.code === code)) {
+      return this.createChildInvite(childName);
+    }
+
+    const invite = {
+      id: `invite_${Date.now()}`,
+      child_name: childName,
+      code,
+      status: 'open',
+      created_at: new Date().toISOString(),
+      used_at: null
+    };
+    invites.unshift(invite);
+    this.write(KEYS.invites, invites);
+    return { success: true, invite };
+  }
+
+  async getChildInvites() {
+    return this.read(KEYS.invites);
+  }
+
+  async validateInviteCode(code) {
+    const invite = this.read(KEYS.invites).find(
+      item => item.code === code.toUpperCase() && item.status === 'open'
+    );
+    return {
+      success: Boolean(invite),
+      invite,
+      error: invite ? null : 'This code was not found or has already been used.'
+    };
+  }
+
+  async markInviteUsed(code) {
+    const invites = this.read(KEYS.invites);
+    const index = invites.findIndex(item => item.code === code.toUpperCase());
+    if (index >= 0) {
+      invites[index] = { ...invites[index], status: 'used', used_at: new Date().toISOString() };
+      this.write(KEYS.invites, invites);
+    }
+    return { success: true };
+  }
+
+  async addMessage(message) {
+    try {
+      const messages = this.read(KEYS.messages);
+      const newMessage = {
+        id: message.id,
+        sender_id: message.senderId,
+        recipient_id: message.recipientId,
+        body: message.body,
+        timestamp: message.timestamp || new Date().toISOString(),
+        status: message.status || 'sent',
+        media_path: message.mediaPath || null,
+        matrix_event_id: message.matrixEventId || null
+      };
+
+      const existingIndex = messages.findIndex(item => item.id === newMessage.id);
+      if (existingIndex >= 0) {
+        messages[existingIndex] = newMessage;
+      } else {
+        messages.push(newMessage);
+      }
+
+      this.write(KEYS.messages, messages);
+      return { success: true };
     } catch (error) {
       console.error('Error adding message:', error);
       return { success: false, error: error.message };
@@ -214,114 +356,44 @@ class DatabaseService {
   }
 
   async getMessages(contactId, limit = 50) {
-    try {
-      if (this.isWeb) {
-        const messages = JSON.parse(localStorage.getItem('familychat_messages') || '[]');
-        return messages
-          .filter(m => m.sender_id === contactId || m.recipient_id === contactId)
-          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-          .slice(0, limit)
-          .reverse();
-      } else {
-        const messages = await this.db.getAllAsync(
-          `SELECT * FROM messages 
-           WHERE (sender_id = ? OR recipient_id = ?) 
-           ORDER BY timestamp DESC 
-           LIMIT ?`,
-          [contactId, contactId, limit]
-        );
-        return messages.reverse();
-      }
-    } catch (error) {
-      console.error('Error getting messages:', error);
-      return [];
-    }
+    return this.read(KEYS.messages)
+      .filter(item => item.sender_id === contactId || item.recipient_id === contactId)
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit)
+      .reverse();
+  }
+
+  async getChildActivity(limit = 40) {
+    const children = new Set(this.read(KEYS.contacts).filter(item => item.is_child === 1).map(item => item.id));
+    return this.read(KEYS.messages)
+      .filter(item => children.has(item.sender_id) || children.has(item.recipient_id))
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit);
   }
 
   async getLastMessagePerContact() {
-    try {
-      if (this.isWeb) {
-        const messages = JSON.parse(localStorage.getItem('familychat_messages') || '[]');
-        const contactMessages = {};
-        
-        messages.forEach(message => {
-          const contactId = message.sender_id === 'current_user' ? message.recipient_id : message.sender_id;
-          if (!contactMessages[contactId] || new Date(message.timestamp) > new Date(contactMessages[contactId].timestamp)) {
-            contactMessages[contactId] = message;
-          }
-        });
-        
-        return Object.values(contactMessages);
-      } else {
-        const messages = await this.db.getAllAsync(`
-          SELECT m.*, 
-                 CASE 
-                   WHEN m.sender_id = ? THEN m.recipient_id 
-                   ELSE m.sender_id 
-                 END as contact_id
-          FROM messages m
-          INNER JOIN (
-            SELECT 
-              CASE 
-                WHEN sender_id = ? THEN recipient_id 
-                ELSE sender_id 
-              END as contact_id,
-              MAX(timestamp) as max_timestamp
-            FROM messages 
-            WHERE sender_id = ? OR recipient_id = ?
-            GROUP BY contact_id
-          ) latest ON m.timestamp = latest.max_timestamp
-          AND (
-            (m.sender_id = ? AND m.recipient_id = latest.contact_id) OR
-            (m.recipient_id = ? AND m.sender_id = latest.contact_id)
-          )
-        `);
-        return messages;
+    const contactMessages = {};
+    this.read(KEYS.messages).forEach(message => {
+      const contactId = message.sender_id === 'current_user' ? message.recipient_id : message.sender_id;
+      if (!contactMessages[contactId] || new Date(message.timestamp) > new Date(contactMessages[contactId].timestamp)) {
+        contactMessages[contactId] = { ...message, contact_id: contactId };
       }
-    } catch (error) {
-      console.error('Error getting last messages:', error);
-      return [];
-    }
+    });
+    return Object.values(contactMessages);
+  }
+
+  async purgeChatHistory() {
+    this.write(KEYS.messages, []);
+    return { success: true };
   }
 
   async parentalPurge() {
-    try {
-      if (this.isWeb) {
-        localStorage.removeItem('familychat_contacts');
-        localStorage.removeItem('familychat_messages');
-        localStorage.removeItem('familychat_family');
-        localStorage.removeItem('familychat_devices');
-        this.initializeLocalStorage();
-        console.log('Web parental purge completed successfully');
-      } else {
-        await this.db.runAsync('DELETE FROM messages');
-        await this.db.runAsync('DELETE FROM contacts');
-        await this.db.runAsync('DELETE FROM family');
-        await this.db.runAsync('DELETE FROM devices');
-        
-        const FileSystem = require('expo-file-system');
-        const mediaDir = FileSystem.documentDirectory + 'media/';
-        const mediaExists = await FileSystem.getInfoAsync(mediaDir);
-        
-        if (mediaExists.exists) {
-          await FileSystem.deleteAsync(mediaDir, { idempotent: true });
-        }
-        
-        console.log('Mobile parental purge completed successfully');
-      }
-      
-      return { success: true };
-    } catch (error) {
-      console.error('Error during parental purge:', error);
-      return { success: false, error: error.message };
-    }
+    Object.values(KEYS).forEach(key => localStorage.removeItem(key));
+    await this.initialize();
+    return { success: true };
   }
 
-  async close() {
-    if (this.db) {
-      await this.db.closeAsync();
-    }
-  }
+  async close() {}
 }
 
 export default new DatabaseService();

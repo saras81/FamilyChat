@@ -1,9 +1,11 @@
 import * as Matrix from 'matrix-js-sdk';
+import { AppState } from 'react-native';
 
 class MatrixService {
   constructor() {
     this.client = null;
     this.isInitialized = false;
+    this.appStateSubscription = null;
   }
 
   async initialize(userId, accessToken, deviceId) {
@@ -17,14 +19,30 @@ class MatrixService {
 
       await this.client.startClient();
       this.isInitialized = true;
-      console.log('Matrix client initialized successfully');
       
       this.setupEventListeners();
+      this.setupAppStateListener();
       return { success: true };
     } catch (error) {
       console.error('Matrix initialization error:', error);
       return { success: false, error: error.message };
     }
+  }
+
+  setupAppStateListener() {
+    this.appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'background') {
+        // Pause Matrix client when app goes to background
+        if (this.client) {
+          this.client.pause();
+        }
+      } else if (nextAppState === 'active') {
+        // Resume Matrix client when app becomes active
+        if (this.client) {
+          this.client.resume();
+        }
+      }
+    });
   }
 
   setupEventListeners() {
@@ -39,10 +57,8 @@ class MatrixService {
     this.client.on('sync', (state, prevState, data) => {
       switch (state) {
         case 'PREPARED':
-          console.log('Matrix sync prepared');
           break;
         case 'SYNCING':
-          console.log('Matrix syncing');
           break;
         case 'ERROR':
           console.error('Matrix sync error:', data);
@@ -125,6 +141,30 @@ class MatrixService {
     }
   }
 
+  async login(username, password) {
+    try {
+      const tempClient = Matrix.createClient({
+        baseUrl: 'https://matrix.org'
+      });
+
+      const result = await tempClient.login('m.login.password', {
+        user: username,
+        password,
+        initial_device_display_name: 'FamilyChat'
+      });
+
+      return {
+        success: true,
+        userId: result.user_id,
+        accessToken: result.access_token,
+        deviceId: result.device_id
+      };
+    } catch (error) {
+      console.error('Matrix login error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
   async registerDevice(username, password) {
     try {
       const tempClient = Matrix.createClient({
@@ -165,6 +205,13 @@ class MatrixService {
         await this.client.stopClient();
         this.client = null;
         this.isInitialized = false;
+
+        // Clean up app state listener
+        if (this.appStateSubscription) {
+          this.appStateSubscription.remove();
+          this.appStateSubscription = null;
+        }
+
         return { success: true };
       } catch (error) {
         console.error('Error during logout:', error);

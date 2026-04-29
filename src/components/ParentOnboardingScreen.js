@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useContext, useState } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,17 @@ import {
 } from 'react-native';
 import DatabaseService from '../database/DatabaseService';
 import MatrixService from '../services/MatrixService';
+import { AuthContext } from '../context/AuthContext';
+
+const parentPalette = {
+  primary: '#1E2A78',
+  background: '#F4F6FF',
+  panel: '#FFFFFF',
+  muted: '#66708A',
+  border: '#DDE4FF'
+};
+
+const toMatrixUsername = (email) => email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
 
 const ParentOnboardingScreen = ({ navigation }) => {
   const [step, setStep] = useState(1);
@@ -18,250 +29,209 @@ const ParentOnboardingScreen = ({ navigation }) => {
   const [parentName, setParentName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [parentAccount, setParentAccount] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [deviceLinkCode, setDeviceLinkCode] = useState('');
+  const { logout } = useContext(AuthContext);
 
-  const handleCreateFamily = async () => {
-    if (!familyName.trim() || !parentName.trim() || !email.trim() || !password.trim()) {
-      Alert.alert('Missing Information', 'Please fill in all fields');
+  const handleCreateParentAccount = async () => {
+    if (!parentName.trim() || !email.trim() || !password.trim()) {
+      Alert.alert('Missing Information', 'Please enter your name, email, and password.');
       return;
     }
 
     setIsCreating(true);
-    
     try {
-      const matrixResult = await MatrixService.registerDevice(
-        email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase(),
-        password
-      );
+      await DatabaseService.initialize();
 
-      if (matrixResult.success) {
-        await DatabaseService.initialize();
-        
-        const familyId = `family_${Date.now()}`;
-        await DatabaseService.addContact({
-          id: `parent_${Date.now()}`,
-          displayName: parentName,
-          isChild: false,
-          isSafeList: false,
-          matrixUserId: matrixResult.userId
+      const parentId = `parent_${Date.now()}`;
+      const normalizedEmail = email.trim().toLowerCase();
+      let matrixUserId = null;
+      let accessToken = `local_parent_${Date.now()}`;
+      let deviceId = `local_device_${Date.now()}`;
+
+      try {
+        const matrixTimeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Matrix registration timeout')), 4000);
         });
 
-        setStep(2);
-        generateDeviceLinkCode();
-      } else {
-        throw new Error(matrixResult.error);
+        const matrixResult = await Promise.race([
+          MatrixService.registerDevice(toMatrixUsername(normalizedEmail), password),
+          matrixTimeout
+        ]);
+
+        if (matrixResult.success) {
+          matrixUserId = matrixResult.userId;
+          accessToken = matrixResult.accessToken;
+          deviceId = matrixResult.deviceId;
+        }
+      } catch (matrixError) {
+        console.log('Matrix registration unavailable, continuing with local parent account:', matrixError.message);
       }
+
+      await DatabaseService.addContact({
+        id: parentId,
+        displayName: parentName.trim(),
+        isChild: false,
+        isSafeList: true,
+        approvalStatus: 'approved',
+        handle: normalizedEmail,
+        matrixUserId
+      });
+      await DatabaseService.saveParentAccount(normalizedEmail, password, parentId, parentName.trim());
+
+      setParentAccount({
+        userId: parentId,
+        accessToken,
+        deviceId
+      });
+      setStep(2);
     } catch (error) {
-      console.error('Error creating family:', error);
-      Alert.alert('Error', 'Could not create family. Please try again.');
+      console.error('Error creating parent account:', error);
+      Alert.alert('Registration Failed', error.message || 'Could not create account. Please try again.');
     } finally {
       setIsCreating(false);
     }
   };
 
-  const generateDeviceLinkCode = () => {
-    const code = MatrixService.generateDeviceLinkCode();
-    setDeviceLinkCode(code);
+  const handleSetupFamily = async () => {
+    if (!familyName.trim()) {
+      Alert.alert('Missing Family Name', 'Please name your family unit.');
+      return;
+    }
+
+    try {
+      const inviteResult = await DatabaseService.createChildInvite('First child');
+      await DatabaseService.addFamily({
+        id: `family_${Date.now()}`,
+        familyName: familyName.trim(),
+        parentMatrixUserId: parentAccount?.userId,
+        inviteCode: inviteResult.invite?.code || null
+      });
+
+      await DatabaseService.saveLoginDetails(
+        parentAccount.userId,
+        parentAccount.accessToken,
+        parentAccount.deviceId,
+        'parent',
+        familyName.trim()
+      );
+
+      setStep(3);
+    } catch (error) {
+      console.error('Error saving family:', error);
+      Alert.alert('Setup Failed', 'Unable to save your family setup. Please try again.');
+    }
   };
 
-  const handleAddChild = () => {
-    Alert.alert(
-      'Add Child Device',
-      `Share this code with your child's device:\n\n${deviceLinkCode}\n\nOr show them the QR code (TODO: Generate QR code)`,
-      [
-        {
-          text: 'Copy Code',
-          onPress: () => {
-            Alert.alert('Code Copied', 'Device link code copied to clipboard');
-          }
-        },
-        {
-          text: 'Generate New Code',
-          onPress: generateDeviceLinkCode
-        },
-        {
-          text: 'Done',
-          style: 'default'
-        }
-      ]
-    );
-  };
-
-  const handleContinue = () => {
+  const handleSuccessLogout = async () => {
+    await MatrixService.logout();
+    await DatabaseService.deleteLoginDetails();
+    logout();
     navigation.reset({
       index: 0,
-      routes: [{ name: 'SafeList' }]
+      routes: [{ name: 'Login' }]
     });
   };
 
-  const renderStep1 = () => (
-    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-      <View style={styles.stepIndicator}>
-        <View style={[styles.stepDot, styles.activeStep]} />
-        <View style={styles.stepLine} />
-        <View style={styles.stepDot} />
-        <View style={styles.stepLine} />
-        <View style={styles.stepDot} />
-      </View>
-
-      <Text style={styles.stepTitle}>Create Your Family</Text>
-      <Text style={styles.stepSubtitle}>
-        Set up your family account to manage your children's messaging
-      </Text>
-
-      <View style={styles.form}>
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Family Name</Text>
-          <TextInput
-            style={styles.input}
-            value={familyName}
-            onChangeText={setFamilyName}
-            placeholder="The Johnson Family"
-            placeholderTextColor="#999999"
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Your Name</Text>
-          <TextInput
-            style={styles.input}
-            value={parentName}
-            onChangeText={setParentName}
-            placeholder="Mom/Dad Name"
-            placeholderTextColor="#999999"
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Email</Text>
-          <TextInput
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="parent@example.com"
-            placeholderTextColor="#999999"
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="Create a secure password"
-            placeholderTextColor="#999999"
-            secureTextEntry
-          />
-        </View>
-
-        <TouchableOpacity
+  const StepIndicator = () => (
+    <View style={styles.stepRow}>
+      {[1, 2, 3].map(item => (
+        <View
+          key={item}
           style={[
-            styles.primaryButton,
-            isCreating && styles.disabledButton
+            styles.stepDot,
+            item <= step && { backgroundColor: parentPalette.primary }
           ]}
-          onPress={handleCreateFamily}
-          disabled={isCreating}
-        >
-          <Text style={styles.primaryButtonText}>
-            {isCreating ? 'Creating...' : 'Create Family'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+        />
+      ))}
+    </View>
   );
 
-  const renderStep2 = () => (
-    <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-      <View style={styles.stepIndicator}>
-        <View style={[styles.stepDot, styles.completedStep]} />
-        <View style={[styles.stepLine, styles.completedLine]} />
-        <View style={[styles.stepDot, styles.activeStep]} />
-        <View style={styles.stepLine} />
-        <View style={styles.stepDot} />
+  const renderAccountStep = () => (
+    <View style={styles.panel}>
+      <Text style={styles.stepTitle}>Create Parent Account</Text>
+      <Text style={styles.stepSubtitle}>Use an email and password to secure the parent dashboard.</Text>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Your Name</Text>
+        <TextInput
+          style={styles.input}
+          value={parentName}
+          onChangeText={setParentName}
+          placeholder="Parent name"
+          placeholderTextColor="#8A8F99"
+        />
       </View>
 
-      <Text style={styles.stepTitle}>Add Your Children</Text>
-      <Text style={styles.stepSubtitle}>
-        Generate codes to link your children's devices to your family
-      </Text>
-
-      <View style={styles.codeSection}>
-        <Text style={styles.codeTitle}>Device Link Code</Text>
-        <View style={styles.codeContainer}>
-          <Text style={styles.codeText}>{deviceLinkCode}</Text>
-        </View>
-        
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={generateDeviceLinkCode}
-        >
-          <Text style={styles.secondaryButtonText}>Generate New Code</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={handleAddChild}
-        >
-          <Text style={styles.primaryButtonText}>Add Child Device</Text>
-        </TouchableOpacity>
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Email</Text>
+        <TextInput
+          style={styles.input}
+          value={email}
+          onChangeText={setEmail}
+          placeholder="parent@example.com"
+          placeholderTextColor="#8A8F99"
+          keyboardType="email-address"
+          autoCapitalize="none"
+        />
       </View>
 
-      <View style={styles.infoBox}>
-        <Text style={styles.infoTitle}>How it works:</Text>
-        <Text style={styles.infoText}>
-          1. Your child installs the FamilyChat app
-        </Text>
-        <Text style={styles.infoText}>
-          2. They select "Join my family"
-        </Text>
-        <Text style={styles.infoText}>
-          3. They enter this 6-digit code
-        </Text>
-        <Text style={styles.infoText}>
-          4. Their device is securely linked to your family
-        </Text>
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Password</Text>
+        <TextInput
+          style={styles.input}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Create password"
+          placeholderTextColor="#8A8F99"
+          secureTextEntry
+        />
       </View>
 
       <TouchableOpacity
-        style={styles.secondaryButton}
-        onPress={() => setStep(3)}
+        style={[styles.primaryButton, isCreating && styles.disabledButton]}
+        onPress={handleCreateParentAccount}
+        disabled={isCreating}
       >
-        <Text style={styles.secondaryButtonText}>Continue to Safe List</Text>
+        <Text style={styles.primaryButtonText}>{isCreating ? 'Creating...' : 'Continue'}</Text>
       </TouchableOpacity>
-    </ScrollView>
+    </View>
   );
 
-  const renderStep3 = () => (
-    <View style={styles.content}>
-      <View style={styles.stepIndicator}>
-        <View style={[styles.stepDot, styles.completedStep]} />
-        <View style={[styles.stepLine, styles.completedLine]} />
-        <View style={[styles.stepDot, styles.completedStep]} />
-        <View style={[styles.stepLine, styles.completedLine]} />
-        <View style={[styles.stepDot, styles.activeStep]} />
+  const renderFamilyStep = () => (
+    <View style={styles.panel}>
+      <Text style={styles.stepTitle}>Setup Your Family</Text>
+      <Text style={styles.stepSubtitle}>Name your family unit. You can invite linked children from the dashboard.</Text>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Family Name</Text>
+        <TextInput
+          style={styles.input}
+          value={familyName}
+          onChangeText={setFamilyName}
+          placeholder="The Johnson Family"
+          placeholderTextColor="#8A8F99"
+        />
       </View>
 
-      <Text style={styles.stepTitle}>Family Created! 🎉</Text>
+      <TouchableOpacity style={styles.primaryButton} onPress={handleSetupFamily}>
+        <Text style={styles.primaryButtonText}>Finish Setup</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderSuccessStep = () => (
+    <View style={styles.panel}>
+      <View style={styles.successBadge}>
+        <Text style={styles.successMark}>✓</Text>
+      </View>
+      <Text style={styles.stepTitle}>Success!</Text>
       <Text style={styles.stepSubtitle}>
-        Your family is ready. You can now:
+        Your parent account and family unit are ready. Sign in again to initialize parent permissions.
       </Text>
 
-      <View style={styles.featuresList}>
-        <Text style={styles.featureItem}>✓ Manage your children's Safe List</Text>
-        <Text style={styles.featureItem}>✓ Monitor messaging activity</Text>
-        <Text style={styles.featureItem}>✓ Use Parental Purge when needed</Text>
-        <Text style={styles.featureItem}>✓ Add more family members anytime</Text>
-      </View>
-
-      <TouchableOpacity
-        style={styles.primaryButton}
-        onPress={handleContinue}
-      >
-        <Text style={styles.primaryButtonText}>Go to Safe List</Text>
+      <TouchableOpacity style={styles.primaryButton} onPress={handleSuccessLogout}>
+        <Text style={styles.primaryButtonText}>Return to Login</Text>
       </TouchableOpacity>
     </View>
   );
@@ -269,13 +239,16 @@ const ParentOnboardingScreen = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Family Setup</Text>
-        <Text style={styles.headerSubtitle}>Step {step} of 3</Text>
+        <Text style={styles.headerTitle}>Parent Setup</Text>
+        <Text style={styles.headerSubtitle}>Secure family administration</Text>
       </View>
 
-      {step === 1 && renderStep1()}
-      {step === 2 && renderStep2()}
-      {step === 3 && renderStep3()}
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        <StepIndicator />
+        {step === 1 && renderAccountStep()}
+        {step === 2 && renderFamilyStep()}
+        {step === 3 && renderSuccessStep()}
+      </ScrollView>
     </View>
   );
 };
@@ -283,190 +256,121 @@ const ParentOnboardingScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F5'
+    backgroundColor: parentPalette.background
   },
   header: {
-    backgroundColor: '#FF6B6B',
-    paddingTop: 60,
-    paddingBottom: 20,
-    paddingHorizontal: 20
+    backgroundColor: parentPalette.primary,
+    paddingTop: 64,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28
   },
   headerTitle: {
-    fontSize: 32,
-    fontWeight: 'bold',
+    fontSize: 31,
+    fontWeight: '800',
     color: '#FFFFFF',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   headerSubtitle: {
-    fontSize: 16,
-    color: '#FFE0E0',
-    marginTop: 4,
+    fontSize: 15,
+    color: '#DDE4FF',
+    marginTop: 5,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   content: {
     flex: 1,
     padding: 20
   },
-  stepIndicator: {
+  stepRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 32
+    gap: 8,
+    marginBottom: 18
   },
   stepDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#E0E0E0'
+    width: 34,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: parentPalette.border
   },
-  activeStep: {
-    backgroundColor: '#FF6B6B',
-    width: 16,
-    height: 16,
-    borderRadius: 8
-  },
-  completedStep: {
-    backgroundColor: '#4CAF50'
-  },
-  stepLine: {
-    width: 32,
-    height: 2,
-    backgroundColor: '#E0E0E0',
-    marginHorizontal: 8
-  },
-  completedLine: {
-    backgroundColor: '#4CAF50'
+  panel: {
+    backgroundColor: parentPalette.panel,
+    borderRadius: 22,
+    padding: 22,
+    shadowColor: '#1B2452',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4
   },
   stepTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#333333',
+    fontSize: 25,
+    fontWeight: '800',
+    color: '#22283A',
     textAlign: 'center',
     marginBottom: 8,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   stepSubtitle: {
-    fontSize: 16,
-    color: '#666666',
+    fontSize: 15,
+    color: parentPalette.muted,
     textAlign: 'center',
-    marginBottom: 32,
-    lineHeight: 24,
+    lineHeight: 22,
+    marginBottom: 24,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
-  form: {
-    flex: 1
-  },
   inputGroup: {
-    marginBottom: 20
+    marginBottom: 18
   },
   inputLabel: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333333',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#22283A',
     marginBottom: 8,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   input: {
-    borderWidth: 2,
-    borderColor: '#E0E0E0',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderWidth: 1.5,
+    borderColor: parentPalette.primary,
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
     fontSize: 16,
-    backgroundColor: '#FFFFFF',
+    color: '#1F2430',
+    backgroundColor: '#FBFCFF',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   primaryButton: {
-    backgroundColor: '#FF6B6B',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+    backgroundColor: parentPalette.primary,
+    borderRadius: 14,
+    paddingVertical: 15,
     alignItems: 'center',
-    marginTop: 24
-  },
-  disabledButton: {
-    backgroundColor: '#CCCCCC'
+    marginTop: 8
   },
   primaryButtonText: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
-  secondaryButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: '#FF6B6B',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+  disabledButton: {
+    opacity: 0.55
+  },
+  successBadge: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    alignSelf: 'center',
     alignItems: 'center',
-    marginTop: 12
+    justifyContent: 'center',
+    backgroundColor: '#E7F8EF',
+    marginBottom: 18
   },
-  secondaryButtonText: {
-    color: '#FF6B6B',
-    fontSize: 16,
-    fontWeight: 'bold',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  codeSection: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 24
-  },
-  codeTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333333',
-    marginBottom: 16,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  codeContainer: {
-    backgroundColor: '#F5F5F5',
-    borderRadius: 12,
-    paddingVertical: 20,
-    paddingHorizontal: 32,
-    marginBottom: 20
-  },
-  codeText: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#FF6B6B',
-    letterSpacing: 4,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  infoBox: {
-    backgroundColor: '#E8F5E8',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2E7D32',
-    marginBottom: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  infoText: {
-    fontSize: 14,
-    color: '#2E7D32',
-    marginBottom: 4,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  featuresList: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
-    marginBottom: 32
-  },
-  featureItem: {
-    fontSize: 16,
-    color: '#333333',
-    marginBottom: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
+  successMark: {
+    fontSize: 38,
+    color: '#15814A',
+    fontWeight: '900'
   }
 });
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,274 +6,154 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  Linking,
   Platform
 } from 'react-native';
-import { Camera } from 'expo-camera';
 import DatabaseService from '../database/DatabaseService';
 import MatrixService from '../services/MatrixService';
+import { AuthContext } from '../context/AuthContext';
 
-const ChildOnboardingScreen = ({ navigation }) => {
-  const [step, setStep] = useState(1);
+const childPalette = {
+  primary: '#40C7A7',
+  background: '#F2FFF9',
+  panel: '#FFFFFF',
+  muted: '#5E716B',
+  border: '#CFF8EC'
+};
+
+const avatarOptions = ['Sun', 'Star', 'Rocket', 'Heart'];
+
+const ChildOnboardingScreen = ({ route, navigation }) => {
+  const validatedCode = route.params?.deviceCode;
   const [childName, setChildName] = useState('');
-  const [linkCode, setLinkCode] = useState('');
-  const [hasPermission, setHasPermission] = useState(null);
-  const [isScanning, setIsScanning] = useState(false);
+  const [selectedAvatar, setSelectedAvatar] = useState(avatarOptions[0]);
   const [isJoining, setIsJoining] = useState(false);
+  const [isCodeReady, setIsCodeReady] = useState(false);
+  const { login } = useContext(AuthContext);
 
-  const requestCameraPermission = async () => {
-    const { status } = await Camera.requestCameraPermissionsAsync();
-    setHasPermission(status === 'granted');
-    return status === 'granted';
-  };
-
-  const handleScanQRCode = async () => {
-    const hasCameraPermission = await requestCameraPermission();
-    
-    if (!hasCameraPermission) {
-      Alert.alert(
-        'Camera Permission',
-        'Camera permission is required to scan QR codes. Please enable camera access in your device settings.',
-        [
-          {
-            text: 'Cancel',
-            style: 'cancel'
-          },
-          {
-            text: 'Settings',
-            onPress: () => Linking.openSettings()
-          }
-        ]
-      );
-      return;
-    }
-
-    setIsScanning(true);
-  };
-
-  const handleBarCodeScanned = async ({ type, data }) => {
-    setIsScanning(false);
-    
-    try {
-      const code = data.includes('familychat:') 
-        ? data.split(':')[1] 
-        : data;
-      
-      if (await MatrixService.validateDeviceLinkCode(code)) {
-        setLinkCode(code);
-        setStep(2);
-      } else {
-        Alert.alert('Invalid Code', 'This is not a valid FamilyChat device link code');
+  useEffect(() => {
+    const verifyEntry = async () => {
+      if (!validatedCode || !(await MatrixService.validateDeviceLinkCode(validatedCode))) {
+        Alert.alert('Family Link Required', 'Please validate your family code before creating a profile.', [
+          { text: 'Back to Login', onPress: () => navigation.replace('Login') }
+        ]);
+        return;
       }
-    } catch (error) {
-      Alert.alert('Error', 'Could not read QR code. Please try again.');
-    }
-  };
 
-  const handleJoinFamily = async () => {
-    if (!childName.trim()) {
-      Alert.alert('Missing Name', 'Please enter your name');
+      const validation = await DatabaseService.validateInviteCode(validatedCode);
+      if (!validation.success) {
+        Alert.alert('Invalid Family Link', validation.error || 'Ask your parent for a fresh invite code.', [
+          { text: 'Back to Login', onPress: () => navigation.replace('Login') }
+        ]);
+        return;
+      }
+
+      setIsCodeReady(true);
+    };
+
+    verifyEntry();
+  }, [navigation, validatedCode]);
+
+  const handleCreateProfile = async () => {
+    if (!isCodeReady) {
+      Alert.alert('Family Link Required', 'Please validate your family code before creating a profile.');
       return;
     }
 
-    if (!linkCode.trim()) {
-      Alert.alert('Missing Code', 'Please enter or scan a device link code');
+    if (!childName.trim()) {
+      Alert.alert('Missing Username', 'Please enter a username for your child profile.');
       return;
     }
 
     setIsJoining(true);
-
     try {
-      await DatabaseService.initialize();
-      
-      const childId = `child_${Date.now()}`;
       const matrixUsername = `child_${Date.now()}`;
-      const matrixPassword = `temp_${Date.now()}`;
+      const matrixPassword = `${validatedCode}_${Date.now()}`;
+      const matrixResult = await MatrixService.registerDevice(matrixUsername, matrixPassword);
 
-      const matrixResult = await MatrixService.registerDevice(
-        matrixUsername,
-        matrixPassword
-      );
-
-      if (matrixResult.success) {
-        await DatabaseService.addContact({
-          id: childId,
-          displayName: childName,
-          isChild: true,
-          isSafeList: true,
-          matrixUserId: matrixResult.userId
-        });
-
-        await MatrixService.initialize(
-          matrixResult.userId,
-          matrixResult.accessToken,
-          matrixResult.deviceId
-        );
-
-        Alert.alert(
-          'Welcome to FamilyChat! 🎉',
-          `Hi ${childName}! You've successfully joined your family.\n\nYou can now message people on your Safe List.`,
-          [
-            {
-              text: 'Start Chatting',
-              onPress: () => {
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: 'SafeList' }]
-                });
-              }
-            }
-          ]
-        );
-      } else {
-        throw new Error(matrixResult.error);
+      if (!matrixResult.success) {
+        throw new Error(matrixResult.error || 'Could not create child account');
       }
+
+      await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
+
+      await DatabaseService.addContact({
+        id: matrixResult.userId,
+        displayName: childName.trim(),
+        avatarPath: selectedAvatar,
+        isChild: true,
+        isSafeList: true,
+        approvalStatus: 'approved',
+        handle: matrixResult.userId,
+        matrixUserId: matrixResult.userId
+      });
+
+      await DatabaseService.markInviteUsed(validatedCode);
+      await DatabaseService.saveLoginDetails(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId, 'child');
+      login('child', matrixResult.userId, null);
     } catch (error) {
-      console.error('Error joining family:', error);
-      Alert.alert(
-        'Error',
-        'Could not join family. Please check your code and try again.',
-        [{ text: 'OK' }]
-      );
+      console.error('Error creating child profile:', error);
+      Alert.alert('Setup Failed', error.message || 'Could not create this child profile. Please try again.');
     } finally {
       setIsJoining(false);
     }
   };
 
-  const renderStep1 = () => (
-    <View style={styles.content}>
-      <Text style={styles.stepTitle}>Join My Family</Text>
-      <Text style={styles.stepSubtitle}>
-        Enter the 6-digit code your parent gave you, or scan their QR code
-      </Text>
-
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Your Name</Text>
-        <TextInput
-          style={styles.input}
-          value={childName}
-          onChangeText={setChildName}
-          placeholder="Enter your name"
-          placeholderTextColor="#999999"
-          maxLength={30}
-        />
+  if (!isCodeReady) {
+    return (
+      <View style={styles.loadingContainer}>
+        <Text style={styles.loadingText}>Checking family link...</Text>
       </View>
-
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Device Link Code</Text>
-        <TextInput
-          style={[styles.input, { fontSize: 24, letterSpacing: 4 }]}
-          value={linkCode}
-          onChangeText={setLinkCode}
-          placeholder="Enter 6-digit code"
-          placeholderTextColor="#999999"
-          maxLength={6}
-          autoCapitalize="characters"
-          textAlign="center"
-        />
-      </View>
-
-      <View style={styles.buttonRow}>
-        <TouchableOpacity
-          style={[styles.secondaryButton, { flex: 1, marginRight: 8 }]}
-          onPress={handleScanQRCode}
-        >
-          <Text style={styles.secondaryButtonText}>📷 Scan QR Code</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.primaryButton, { flex: 1, marginLeft: 8 }]}
-          onPress={() => setStep(2)}
-          disabled={!childName.trim() || !linkCode.trim()}
-        >
-          <Text style={styles.primaryButtonText}>Join Family</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.helpBox}>
-        <Text style={styles.helpTitle}>Need help?</Text>
-        <Text style={styles.helpText}>
-          Ask your parent for the 6-digit code or QR code from their FamilyChat app
-        </Text>
-      </View>
-    </View>
-  );
-
-  const renderStep2 = () => (
-    <View style={styles.content}>
-      <Text style={styles.stepTitle}>Confirm Your Details</Text>
-      <Text style={styles.stepSubtitle}>
-        Please check that everything looks correct
-      </Text>
-
-      <View style={styles.confirmBox}>
-        <Text style={styles.confirmLabel}>Your Name:</Text>
-        <Text style={styles.confirmValue}>{childName}</Text>
-        
-        <Text style={styles.confirmLabel}>Device Link Code:</Text>
-        <Text style={styles.confirmValue}>{linkCode}</Text>
-      </View>
-
-      <TouchableOpacity
-        style={[styles.primaryButton, isJoining && styles.disabledButton]}
-        onPress={handleJoinFamily}
-        disabled={isJoining}
-      >
-        <Text style={styles.primaryButtonText}>
-          {isJoining ? 'Joining...' : 'Confirm & Join Family'}
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.secondaryButton}
-        onPress={() => setStep(1)}
-        disabled={isJoining}
-      >
-        <Text style={styles.secondaryButtonText}>Go Back</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderQRScanner = () => (
-    <View style={styles.scannerContainer}>
-      <Camera
-        style={styles.scanner}
-        type={Camera.Constants.Type.back}
-        onBarCodeScanned={isScanning ? handleBarCodeScanned : undefined}
-        barCodeScannerSettings={{
-          barCodeTypes: ['qr'],
-        }}
-      />
-      
-      <View style={styles.scannerOverlay}>
-        <View style={styles.scannerFrame} />
-        <Text style={styles.scannerText}>
-          Position the QR code inside the frame
-        </Text>
-        
-        <TouchableOpacity
-          style={styles.cancelButton}
-          onPress={() => setIsScanning(false)}
-        >
-          <Text style={styles.cancelButtonText}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  if (isScanning) {
-    return renderQRScanner();
+    );
   }
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>FamilyChat</Text>
-        <Text style={styles.headerSubtitle}>Safe family messaging</Text>
+        <Text style={styles.headerTitle}>Create Child Profile</Text>
+        <Text style={styles.headerSubtitle}>Family link verified</Text>
       </View>
 
-      {step === 1 && renderStep1()}
-      {step === 2 && renderStep2()}
+      <View style={styles.content}>
+        <View style={styles.panel}>
+          <Text style={styles.stepTitle}>Choose Your Profile</Text>
+          <Text style={styles.stepSubtitle}>Pick a username and avatar for safe family chats.</Text>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Username</Text>
+            <TextInput
+              style={styles.input}
+              value={childName}
+              onChangeText={setChildName}
+              placeholder="Your name"
+              placeholderTextColor="#8A8F99"
+              maxLength={30}
+            />
+          </View>
+
+          <Text style={styles.inputLabel}>Avatar</Text>
+          <View style={styles.avatarGrid}>
+            {avatarOptions.map(option => (
+              <TouchableOpacity
+                key={option}
+                style={[styles.avatarChip, selectedAvatar === option && styles.avatarChipActive]}
+                onPress={() => setSelectedAvatar(option)}
+              >
+                <Text style={[styles.avatarText, selectedAvatar === option && styles.avatarTextActive]}>
+                  {option}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.primaryButton, isJoining && styles.disabledButton]}
+            onPress={handleCreateProfile}
+            disabled={isJoining}
+          >
+            <Text style={styles.primaryButtonText}>{isJoining ? 'Creating...' : 'Start FamilyChat'}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 };
@@ -281,183 +161,132 @@ const ChildOnboardingScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F5'
+    backgroundColor: childPalette.background
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: childPalette.background
+  },
+  loadingText: {
+    fontSize: 17,
+    color: childPalette.muted,
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   header: {
-    backgroundColor: '#4A90E2',
-    paddingTop: 60,
-    paddingBottom: 20,
-    paddingHorizontal: 20
+    backgroundColor: childPalette.primary,
+    paddingTop: 64,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28
   },
   headerTitle: {
-    fontSize: 32,
-    fontWeight: 'bold',
+    fontSize: 30,
+    fontWeight: '800',
     color: '#FFFFFF',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   headerSubtitle: {
-    fontSize: 16,
-    color: '#E8F4FD',
-    marginTop: 4,
+    fontSize: 15,
+    color: '#D7FFF0',
+    marginTop: 5,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   content: {
     flex: 1,
     padding: 20
   },
+  panel: {
+    backgroundColor: childPalette.panel,
+    borderRadius: 22,
+    padding: 22,
+    shadowColor: '#12483A',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4
+  },
   stepTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#333333',
+    fontSize: 25,
+    fontWeight: '800',
+    color: '#1F302C',
     textAlign: 'center',
     marginBottom: 8,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   stepSubtitle: {
-    fontSize: 16,
-    color: '#666666',
+    fontSize: 15,
+    color: childPalette.muted,
     textAlign: 'center',
-    marginBottom: 32,
-    lineHeight: 24,
+    lineHeight: 22,
+    marginBottom: 24,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   inputGroup: {
-    marginBottom: 20
+    marginBottom: 18
   },
   inputLabel: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333333',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#1F302C',
     marginBottom: 8,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   input: {
-    borderWidth: 2,
-    borderColor: '#E0E0E0',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderWidth: 1.5,
+    borderColor: childPalette.primary,
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
     fontSize: 16,
-    backgroundColor: '#FFFFFF',
+    color: '#1F302C',
+    backgroundColor: '#FBFFFD',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
-  buttonRow: {
+  avatarGrid: {
     flexDirection: 'row',
-    marginBottom: 24
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 20
+  },
+  avatarChip: {
+    borderWidth: 1.5,
+    borderColor: childPalette.border,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: '#FFFFFF'
+  },
+  avatarChipActive: {
+    backgroundColor: childPalette.primary,
+    borderColor: childPalette.primary
+  },
+  avatarText: {
+    color: '#1F302C',
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
+  },
+  avatarTextActive: {
+    color: '#FFFFFF'
   },
   primaryButton: {
-    backgroundColor: '#4A90E2',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    alignItems: 'center'
-  },
-  disabledButton: {
-    backgroundColor: '#CCCCCC'
+    backgroundColor: childPalette.primary,
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginTop: 8
   },
   primaryButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
-  secondaryButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: '#4A90E2',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    alignItems: 'center'
-  },
-  secondaryButtonText: {
-    color: '#4A90E2',
-    fontSize: 16,
-    fontWeight: 'bold',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  helpBox: {
-    backgroundColor: '#E8F4FD',
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 24
-  },
-  helpTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#4A90E2',
-    marginBottom: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  helpText: {
-    fontSize: 14,
-    color: '#4A90E2',
-    lineHeight: 20,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  confirmBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
-    marginBottom: 32
-  },
-  confirmLabel: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#666666',
-    marginBottom: 4,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  confirmValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333333',
-    marginBottom: 20,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  scannerContainer: {
-    flex: 1,
-    backgroundColor: '#000000'
-  },
-  scanner: {
-    flex: 1
-  },
-  scannerOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  scannerFrame: {
-    width: 250,
-    height: 250,
-    borderWidth: 3,
-    borderColor: '#4A90E2',
-    borderRadius: 12,
-    backgroundColor: 'transparent'
-  },
-  scannerText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    marginTop: 20,
-    textAlign: 'center',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  cancelButton: {
-    backgroundColor: '#FF6B6B',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    marginTop: 40
-  },
-  cancelButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
+  disabledButton: {
+    opacity: 0.55
   }
 });
 

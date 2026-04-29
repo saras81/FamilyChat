@@ -17,12 +17,14 @@ import MatrixService from '../services/MatrixService';
 const { width, height } = Dimensions.get('window');
 
 const ChatScreen = ({ route, navigation }) => {
-  const { contact } = route.params;
+  const contact = route.params?.contact;
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
+    if (!contact) return;
+
     navigation.setOptions({
       title: contact.display_name,
       headerStyle: { backgroundColor: '#4A90E2' },
@@ -42,15 +44,19 @@ const ChatScreen = ({ route, navigation }) => {
     };
   }, [contact, navigation]);
 
-  const setupMatrixListener = () => {
+  const setupMatrixListener = useCallback(() => {
+    if (!contact) return;
+
     MatrixService.setOnMessageReceived((message) => {
       if (message.senderId === contact.id || message.recipientId === contact.id) {
         setMessages(prev => [...prev, message]);
       }
     });
-  };
+  }, [contact]);
 
-  const loadMessages = async () => {
+  const loadMessages = useCallback(async () => {
+    if (!contact) return;
+
     try {
       setIsLoading(true);
       const loadedMessages = await DatabaseService.getMessages(contact.id);
@@ -61,10 +67,10 @@ const ChatScreen = ({ route, navigation }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [contact]);
 
-  const sendMessage = async () => {
-    if (!newMessage.trim()) return;
+  const sendMessage = useCallback(async () => {
+    if (!newMessage.trim() || !contact) return;
 
     const messageText = newMessage.trim();
     setNewMessage('');
@@ -97,7 +103,7 @@ const ChatScreen = ({ route, navigation }) => {
         await DatabaseService.addMessage(messageData);
         
         setMessages(prev => 
-          prev.map(msg => 
+          prev.map(msg =>
             msg.id === tempMessage.id ? messageData : msg
           )
         );
@@ -116,9 +122,9 @@ const ChatScreen = ({ route, navigation }) => {
         )
       );
     }
-  };
+  }, [newMessage, contact]);
 
-  const renderMessage = ({ item }) => {
+  const renderMessage = useCallback(({ item }) => {
     const isCurrentUser = item.senderId === 'current_user';
     const bubbleColor = isCurrentUser ? '#4A90E2' : '#E8F4FD';
     const textColor = isCurrentUser ? '#FFFFFF' : '#333333';
@@ -151,7 +157,16 @@ const ChatScreen = ({ route, navigation }) => {
         )}
       </View>
     );
-  };
+  }, []);
+
+  if (!contact) {
+    return (
+      <View style={styles.emptyChatContainer}>
+        <Text style={styles.emptyChatTitle}>Choose a contact</Text>
+        <Text style={styles.emptyChatText}>Open a chat from your Safe List.</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView 
@@ -171,6 +186,14 @@ const ChatScreen = ({ route, navigation }) => {
             style={styles.messagesList}
             contentContainerStyle={styles.messagesContent}
             showsVerticalScrollIndicator={false}
+            removeClippedSubviews={true}
+            maxToRenderPerBatch={10}
+            windowSize={10}
+            getItemLayout={(data, index) => ({
+              length: 80, // Approximate height of each message
+              offset: 80 * index,
+              index,
+            })}
           />
         )}
       </View>
@@ -206,6 +229,26 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5'
+  },
+  emptyChatContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: '#F5F5F5'
+  },
+  emptyChatTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333333',
+    marginBottom: 8,
+    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
+  },
+  emptyChatText: {
+    fontSize: 16,
+    color: '#666666',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   },
   messagesContainer: {
     flex: 1
@@ -297,4 +340,4 @@ const styles = StyleSheet.create({
   }
 });
 
-export default ChatScreen;
+export default React.memo(ChatScreen);

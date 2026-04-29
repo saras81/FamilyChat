@@ -1,28 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Platform, StatusBar, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Platform, StatusBar, View, Text, StyleSheet } from 'react-native';
 
 import DatabaseService from './src/database/DatabaseService';
 import MatrixService from './src/services/MatrixService';
+import { AuthProvider, AuthContext } from './src/context/AuthContext';
 
+import LoginScreen from './src/components/LoginScreen';
 import ParentOnboardingScreen from './src/components/ParentOnboardingScreen';
 import ChildOnboardingScreen from './src/components/ChildOnboardingScreen';
+import ParentManagementScreen from './src/components/ParentManagementScreen';
+import ChildSettingsScreen from './src/components/ChildSettingsScreen';
 import SafeListScreen from './src/components/SafeListScreen';
 import ChatScreen from './src/components/ChatScreen';
-import ParentSettingsScreen from './src/components/ParentSettingsScreen';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
-const MainTabNavigator = () => {
+const MainTabNavigator = ({ isParent }) => {
+  const tintColor = isParent ? '#1E2A78' : '#40C7A7';
+  const inactiveTintColor = isParent ? '#C8D2FF' : '#CFF8EC';
+
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#4A90E2',
+          backgroundColor: tintColor,
           borderTopWidth: 0,
           paddingBottom: 8,
           paddingTop: 8,
@@ -34,101 +40,84 @@ const MainTabNavigator = () => {
           fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
         },
         tabBarActiveTintColor: '#FFFFFF',
-        tabBarInactiveTintColor: '#E8F4FD'
+        tabBarInactiveTintColor: inactiveTintColor
       }}
     >
-      <Tab.Screen 
-        name="SafeList" 
+      {isParent && (
+        <Tab.Screen
+          name="Dashboard"
+          component={ParentManagementScreen}
+          options={{
+            tabBarLabel: 'Dashboard',
+            tabBarIcon: () => null
+          }}
+        />
+      )}
+      <Tab.Screen
+        name="SafeList"
         component={SafeListScreen}
         options={{
           tabBarLabel: 'Safe List',
           tabBarIcon: () => null
         }}
       />
-      <Tab.Screen 
-        name="Settings" 
-        component={ParentSettingsScreen}
-        options={{
-          tabBarLabel: 'Settings',
-          tabBarIcon: () => null
-        }}
-      />
+      {!isParent && (
+        <Tab.Screen
+          name="Settings"
+          component={ChildSettingsScreen}
+          options={{
+            tabBarLabel: 'Settings',
+            tabBarIcon: () => null
+          }}
+        />
+      )}
     </Tab.Navigator>
   );
 };
 
-const ChooseRoleScreen = ({ navigation }) => {
-  const handleParentSetup = () => {
-    navigation.navigate('ParentOnboarding');
-  };
-
-  const handleChildSetup = () => {
-    navigation.navigate('ChildOnboarding');
-  };
-
-  return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#4A90E2" />
-      
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>FamilyChat</Text>
-        <Text style={styles.headerSubtitle}>Safe family messaging</Text>
-      </View>
-
-      <View style={styles.content}>
-        <Text style={styles.question}>How are you using FamilyChat?</Text>
-        
-        <TouchableOpacity
-          style={[styles.roleButton, styles.parentButton]}
-          onPress={handleParentSetup}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.roleEmoji}>👨‍👩‍👧‍👦</Text>
-          <Text style={styles.roleTitle}>I'm a Parent</Text>
-          <Text style={styles.roleDescription}>
-            Create a family account and manage my children's messaging
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.roleButton, styles.childButton]}
-          onPress={handleChildSetup}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.roleEmoji}>👶</Text>
-          <Text style={styles.roleTitle}>I'm a Child</Text>
-          <Text style={styles.roleDescription}>
-            Join my family with the code from my parent
-          </Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-};
-
-const App = () => {
+const AppContent = () => {
   const [isInitialized, setIsInitialized] = useState(false);
-  const [needsOnboarding, setNeedsOnboarding] = useState(true);
+  const { isLoggedIn, userRole, login, logout } = useContext(AuthContext);
 
   useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Database initialization timeout')), 10000);
+        });
+
+        await Promise.race([
+          DatabaseService.initialize(),
+          timeoutPromise
+        ]);
+
+        // Attempt to load existing session
+        const storedDetails = await DatabaseService.getLoginDetails();
+        if (storedDetails?.userId && storedDetails?.accessToken && storedDetails?.deviceId && storedDetails?.userRole) {
+          if (storedDetails.accessToken.startsWith('local_')) {
+            login(storedDetails.userRole, storedDetails.userId, storedDetails.familyName);
+            setIsInitialized(true);
+            return;
+          }
+
+          const matrixInit = await MatrixService.initialize(storedDetails.userId, storedDetails.accessToken, storedDetails.deviceId);
+          if (matrixInit.success) {
+            login(storedDetails.userRole, storedDetails.userId, storedDetails.familyName);
+          } else {
+            console.error('Matrix re-initialization failed:', matrixInit.error);
+            logout(); // Force logout if Matrix re-init fails
+          }
+        }
+
+        setIsInitialized(true);
+      } catch (error) {
+        console.error('App initialization error:', error);
+        setIsInitialized(true);
+      }
+    };
+
     initializeApp();
   }, []);
-
-  const initializeApp = async () => {
-    try {
-      await DatabaseService.initialize();
-      
-      const contacts = await DatabaseService.getSafeListContacts();
-      const hasExistingData = contacts.length > 0;
-      
-      setNeedsOnboarding(!hasExistingData);
-      setIsInitialized(true);
-    } catch (error) {
-      console.error('App initialization error:', error);
-      setNeedsOnboarding(true);
-      setIsInitialized(true);
-    }
-  };
 
   if (!isInitialized) {
     return (
@@ -140,29 +129,36 @@ const App = () => {
 
   return (
     <NavigationContainer>
-      <StatusBar barStyle="light-content" backgroundColor="#4A90E2" />
-      
-      {needsOnboarding ? (
+      <StatusBar barStyle="light-content" backgroundColor={userRole === 'parent' ? '#1E2A78' : '#40C7A7'} />
+
+      {isLoggedIn ? (
         <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="ChooseRole" component={ChooseRoleScreen} />
-          <Stack.Screen name="ParentOnboarding" component={ParentOnboardingScreen} />
-          <Stack.Screen name="ChildOnboarding" component={ChildOnboardingScreen} />
+          <Stack.Screen
+            name="Main"
+            component={() => <MainTabNavigator isParent={userRole === 'parent'} />}
+          />
+          <Stack.Screen name="Chat" component={ChatScreen} />
         </Stack.Navigator>
       ) : (
         <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="Main" component={MainTabNavigator} />
-          <Stack.Screen name="Chat" component={ChatScreen} />
+          <Stack.Screen name="Login" component={LoginScreen} />
+          <Stack.Screen name="ParentSetup" component={ParentOnboardingScreen} />
+          <Stack.Screen name="ChildOnboarding" component={ChildOnboardingScreen} />
         </Stack.Navigator>
       )}
     </NavigationContainer>
   );
 };
 
+const App = () => {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+};
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F5'
-  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -172,79 +168,6 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: 18,
     color: '#666666',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  header: {
-    backgroundColor: '#4A90E2',
-    paddingTop: 80,
-    paddingBottom: 40,
-    paddingHorizontal: 20,
-    alignItems: 'center'
-  },
-  headerTitle: {
-    fontSize: 42,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  headerSubtitle: {
-    fontSize: 18,
-    color: '#E8F4FD',
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  content: {
-    flex: 1,
-    padding: 20,
-    justifyContent: 'center'
-  },
-  question: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333333',
-    textAlign: 'center',
-    marginBottom: 40,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  roleButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
-    marginBottom: 20,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 4
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8
-  },
-  parentButton: {
-    borderWidth: 3,
-    borderColor: '#FF6B6B'
-  },
-  childButton: {
-    borderWidth: 3,
-    borderColor: '#4A90E2'
-  },
-  roleEmoji: {
-    fontSize: 48,
-    marginBottom: 16
-  },
-  roleTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333333',
-    marginBottom: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
-  },
-  roleDescription: {
-    fontSize: 16,
-    color: '#666666',
-    textAlign: 'center',
-    lineHeight: 22,
     fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : 'sans-serif'
   }
 });

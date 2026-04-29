@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useContext, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
   Platform
 } from 'react-native';
 import DatabaseService from '../database/DatabaseService';
-import MatrixService from '../services/MatrixService';
+import { AuthContext } from '../context/AuthContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -20,6 +20,10 @@ const SafeListScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
   const [lastMessages, setLastMessages] = useState({});
   const [isLoading, setIsLoading] = useState(true);
+  const { userRole } = useContext(AuthContext);
+  const palette = userRole === 'parent'
+    ? { primary: '#1E2A78', background: '#F4F6FF', subtle: '#DDE4FF' }
+    : { primary: '#40C7A7', background: '#F2FFF9', subtle: '#D7FFF0' };
 
   useEffect(() => {
     loadSafeList();
@@ -27,7 +31,7 @@ const SafeListScreen = ({ navigation }) => {
     return unsubscribe;
   }, [navigation]);
 
-  const loadSafeList = async () => {
+  const loadSafeList = useCallback(async () => {
     try {
       setIsLoading(true);
       const safeListContacts = await DatabaseService.getSafeListContacts();
@@ -45,13 +49,13 @@ const SafeListScreen = ({ navigation }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const openChat = (contact) => {
+  const openChat = useCallback((contact) => {
     navigation.navigate('Chat', { contact });
-  };
+  }, [navigation]);
 
-  const renderContact = ({ item }) => {
+  const renderContact = useCallback(({ item }) => {
     const lastMessage = lastMessages[item.id];
     const lastMessageText = lastMessage 
       ? lastMessage.body 
@@ -73,7 +77,7 @@ const SafeListScreen = ({ navigation }) => {
           {item.avatar_path ? (
             <Image source={{ uri: item.avatar_path }} style={styles.avatar} />
           ) : (
-            <View style={styles.defaultAvatar}>
+            <View style={[styles.defaultAvatar, { backgroundColor: palette.primary }]}>
               <Text style={styles.avatarText}>
                 {item.display_name.charAt(0).toUpperCase()}
               </Text>
@@ -97,22 +101,22 @@ const SafeListScreen = ({ navigation }) => {
         )}
       </TouchableOpacity>
     );
-  };
+  }, [lastMessages, openChat, palette.primary]);
 
   if (isLoading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4A90E2" />
+      <View style={[styles.loadingContainer, { backgroundColor: palette.background }]}>
+        <ActivityIndicator size="large" color={palette.primary} />
         <Text style={styles.loadingText}>Loading Safe List...</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
+    <View style={[styles.container, { backgroundColor: palette.background }]}>
+      <View style={[styles.header, { backgroundColor: palette.primary }]}>
         <Text style={styles.headerTitle}>Safe List</Text>
-        <Text style={styles.headerSubtitle}>
+        <Text style={[styles.headerSubtitle, { color: palette.subtle }]}>
           {contacts.length} {contacts.length === 1 ? 'contact' : 'contacts'}
         </Text>
       </View>
@@ -132,6 +136,14 @@ const SafeListScreen = ({ navigation }) => {
           style={styles.contactsList}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.contactsContent}
+          removeClippedSubviews={true}
+          maxToRenderPerBatch={10}
+          windowSize={10}
+          getItemLayout={(data, index) => ({
+            length: 80, // Approximate height of each contact item
+            offset: 80 * index,
+            index,
+          })}
         />
       )}
     </View>
@@ -276,4 +288,4 @@ const styles = StyleSheet.create({
   }
 });
 
-export default SafeListScreen;
+export default React.memo(SafeListScreen);
