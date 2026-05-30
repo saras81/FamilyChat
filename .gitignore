@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# throwaway probes + local deploy artifacts (not source)
+probe-matrix.mjs
+/familychat-demo

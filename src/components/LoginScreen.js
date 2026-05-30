@@ -75,6 +75,12 @@ const LoginScreen = ({ navigation }) => {
         return;
       }
 
+      // Bring the Matrix client online for real (non-local) sessions so the
+      // parent syncs the family room, reconciles the child contact, and can chat.
+      if (!String(response.accessToken).startsWith('local_')) {
+        await MatrixService.initialize(response.userId, response.accessToken, response.deviceId);
+      }
+
       const family = await DatabaseService.getFamily();
       await DatabaseService.saveLoginDetails(
         response.userId,
@@ -108,15 +114,16 @@ const LoginScreen = ({ navigation }) => {
 
     setIsLoading(true);
     try {
+      // Local invite match = same-device flow (offline demo). A miss is normal
+      // cross-device — the parent's invite lives in *their* localStorage, not
+      // the child's — so we still proceed and let onboarding resolve the code
+      // against the homeserver (the code doubles as a family-room alias).
       const validation = await DatabaseService.validateInviteCode(normalizedCode);
-      if (!validation.success) {
-        Alert.alert('Code Not Found', validation.error || 'Ask your parent for a fresh invite code.');
-        return;
-      }
 
       navigation.navigate('ChildOnboarding', {
         deviceCode: normalizedCode,
-        inviteId: validation.invite?.id
+        inviteId: validation.invite?.id,
+        remote: !validation.success
       });
     } catch (error) {
       console.error('Child link validation error:', error);

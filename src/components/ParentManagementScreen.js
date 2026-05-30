@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import DatabaseService from '../database/DatabaseService';
+import MatrixService from '../services/MatrixService';
 
 const palette = {
   primary: '#1E2A78',
@@ -56,6 +57,13 @@ const ParentManagementScreen = () => {
     try {
       const result = await DatabaseService.createChildInvite(newInviteName.trim() || 'Child slot');
       if (!result.success) throw new Error(result.error);
+
+      // Stand up the Matrix room for this code so the invited child can join it
+      // from another device. No-op if the homeserver is unreachable.
+      if (result.invite?.code && MatrixService.isReady()) {
+        await MatrixService.getOrCreateRoomForCode(result.invite.code);
+      }
+
       setNewInviteName('');
       await loadDashboard();
     } catch (error) {

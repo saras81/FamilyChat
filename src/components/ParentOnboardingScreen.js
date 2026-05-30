@@ -63,6 +63,10 @@ const ParentOnboardingScreen = ({ navigation }) => {
           matrixUserId = matrixResult.userId;
           accessToken = matrixResult.accessToken;
           deviceId = matrixResult.deviceId;
+          // Bring the parent's Matrix client online now so we can create the
+          // family room (and set a display name the child will see) below.
+          await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
+          await MatrixService.setDisplayName(parentName.trim());
         }
       } catch (matrixError) {
         console.log('Matrix registration unavailable, continuing with local parent account:', matrixError.message);
@@ -101,11 +105,19 @@ const ParentOnboardingScreen = ({ navigation }) => {
 
     try {
       const inviteResult = await DatabaseService.createChildInvite('First child');
+      const inviteCode = inviteResult.invite?.code || null;
+
+      // Create the Matrix room the child will join from this code. The code is
+      // carried as a room alias, so a child on a different device can resolve it.
+      if (inviteCode && MatrixService.isReady()) {
+        await MatrixService.getOrCreateRoomForCode(inviteCode);
+      }
+
       await DatabaseService.addFamily({
         id: `family_${Date.now()}`,
         familyName: familyName.trim(),
         parentMatrixUserId: parentAccount?.userId,
-        inviteCode: inviteResult.invite?.code || null
+        inviteCode
       });
 
       await DatabaseService.saveLoginDetails(
