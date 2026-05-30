@@ -6,7 +6,9 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "web:e2e": "expo start --web --port 8099",
+    "e2e": "node e2e-local.mjs"
   },
   "dependencies": {
     "@react-navigation/bottom-tabs": "^7.15.9",
