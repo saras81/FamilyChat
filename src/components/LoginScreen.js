@@ -267,7 +267,7 @@ const LoginScreen = ({ navigation }) => {
 
               <TouchableOpacity
                 style={[styles.primaryButton, styles.flexButton, { backgroundColor: palette.primary }, isLoading && styles.disabledButton]}
-                onPress={handleValidateChildCode}
+                onPress={() => handleValidateChildCode()}
                 disabled={isLoading}
               >
                 <Text style={styles.primaryButtonText}>{isLoading ? 'Checking...' : 'Validate'}</Text>

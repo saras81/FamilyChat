@@ -68,28 +68,49 @@ const ChildOnboardingScreen = ({ route, navigation }) => {
     try {
       const matrixUsername = `child_${Date.now()}`;
       const matrixPassword = `${validatedCode}_${Date.now()}`;
-      const matrixResult = await MatrixService.registerDevice(matrixUsername, matrixPassword);
 
-      if (!matrixResult.success) {
-        throw new Error(matrixResult.error || 'Could not create child account');
+      // Default to a local-only child profile so onboarding always completes,
+      // even when matrix.org is unreachable / rate-limited / requires a captcha.
+      let childId = `child_${Date.now()}`;
+      let accessToken = `local_child_${Date.now()}`;
+      let deviceId = `local_device_${Date.now()}`;
+      let matrixUserId = null;
+
+      try {
+        const matrixTimeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Matrix registration timeout')), 4000);
+        });
+
+        const matrixResult = await Promise.race([
+          MatrixService.registerDevice(matrixUsername, matrixPassword),
+          matrixTimeout
+        ]);
+
+        if (matrixResult.success) {
+          childId = matrixResult.userId;
+          accessToken = matrixResult.accessToken;
+          deviceId = matrixResult.deviceId;
+          matrixUserId = matrixResult.userId;
+          await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
+        }
+      } catch (matrixError) {
+        console.log('Matrix registration unavailable, continuing with local child account:', matrixError.message);
       }
 
-      await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
-
       await DatabaseService.addContact({
-        id: matrixResult.userId,
+        id: childId,
         displayName: childName.trim(),
         avatarPath: selectedAvatar,
         isChild: true,
         isSafeList: true,
         approvalStatus: 'approved',
-        handle: matrixResult.userId,
-        matrixUserId: matrixResult.userId
+        handle: childId,
+        matrixUserId
       });
 
       await DatabaseService.markInviteUsed(validatedCode);
-      await DatabaseService.saveLoginDetails(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId, 'child');
-      login('child', matrixResult.userId, null);
+      await DatabaseService.saveLoginDetails(childId, accessToken, deviceId, 'child');
+      login('child', childId, null);
     } catch (error) {
       console.error('Error creating child profile:', error);
       Alert.alert('Setup Failed', error.message || 'Could not create this child profile. Please try again.');
