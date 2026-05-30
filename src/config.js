@@ -1,16 +1,13 @@
 // Homeserver configuration.
 //
-// The app talks to a Matrix homeserver for real cross-device messaging. During
-// the pilot this is a local Synapse exposed through a cloudflared quick tunnel;
-// the tunnel URL changes every time `cloudflared` restarts, so prefer setting
-// EXPO_PUBLIC_HOMESERVER_URL at build/start time over relying on the default.
-//
-// When the permanent homeserver lands on Railway, set:
-//   EXPO_PUBLIC_HOMESERVER_URL=https://<your-synapse>.up.railway.app
-// and rebuild — no code change required.
+// The app talks to a Matrix homeserver for real cross-device messaging. The
+// permanent server is a Synapse instance on Railway (project familychat-synapse,
+// service `synapse`, SQLite on a persistent volume) — see synapse-railway/.
+// Override with EXPO_PUBLIC_HOMESERVER_URL to point at a different homeserver
+// (e.g. a local Synapse via cloudflared during development); no code change.
 export const HOMESERVER_URL =
   process.env.EXPO_PUBLIC_HOMESERVER_URL ||
-  'https://sort-reviewed-memory-connector.trycloudflare.com';
+  'https://synapse-production-ef7b.up.railway.app';
 
 // The Matrix server_name — the part after ':' in user IDs (@ra:familychat.chat)
 // and room aliases (#familychat-abc123:familychat.chat). This is fixed by the
