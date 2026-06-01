@@ -7,10 +7,14 @@
 // rooms, in BOTH directions.
 //
 // Prereqs: `npm run web:e2e` (dev server on :8099) + Synapse reachable via the
-// tunnel in src/config.js. Run with: node e2e-cross-device.mjs
+// homeserver in src/config.js. Run with: node e2e-cross-device.mjs
+//
+// Set E2E_URL to point at any deployment instead of the local dev server, e.g.
+//   E2E_URL=https://familychat-demo.vercel.app node e2e-cross-device.mjs
+// to prove the SHIPPED bundle (homeserver baked in at build time) end-to-end.
 import { chromium } from 'playwright';
 
-const URL = 'http://localhost:8099';
+const URL = process.env.E2E_URL || 'http://localhost:8099';
 const SHOT = (n) => `/tmp/familychat-xdev-${n}.png`;
 const log = (...a) => console.log('•', ...a);
 const stamp = Date.now();
