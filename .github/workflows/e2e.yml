@@ -1,0 +1,72 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: Offline e2e smoke (web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20 (LTS). Expo web under Node 25 hits ERR_SOCKET_BAD_PORT before serving.
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Start the react-native-web build on the port the harness expects (8099).
+      # CI=1 keeps Expo non-interactive; the process stays alive across later steps.
+      - name: Start Expo web build
+        run: nohup npm run web:e2e > /tmp/expo.log 2>&1 &
+        env:
+          CI: '1'
+
+      - name: Wait for dev server
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 30 -o /dev/null http://localhost:8099; then
+              echo "dev server is up after ~$((i)) attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Expo web server never became ready on :8099"
+          echo "----- expo.log -----"
+          cat /tmp/expo.log || true
+          exit 1
+
+      # Drives parent signup -> family -> invite -> child link -> chat send,
+      # asserting the message persists as 'sent' and survives a reload. No Matrix
+      # homeserver required.
+      - name: Run e2e smoke
+        run: npm run e2e
+
+      - name: Upload e2e screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: /tmp/familychat-e2e-*.png
+          if-no-files-found: ignore
+
+      - name: Upload Expo log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo-log
+          path: /tmp/expo.log
+          if-no-files-found: ignore

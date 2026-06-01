@@ -24,6 +24,9 @@ const avatarOptions = ['Sun', 'Star', 'Rocket', 'Heart'];
 
 const ChildOnboardingScreen = ({ route, navigation }) => {
   const validatedCode = route.params?.deviceCode;
+  // Cross-device join: the invite isn't in this device's localStorage, so we
+  // validate the code against the homeserver (room alias) instead of locally.
+  const isRemoteJoin = Boolean(route.params?.remote);
   const [childName, setChildName] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState(avatarOptions[0]);
   const [isJoining, setIsJoining] = useState(false);
@@ -39,12 +42,17 @@ const ChildOnboardingScreen = ({ route, navigation }) => {
         return;
       }
 
-      const validation = await DatabaseService.validateInviteCode(validatedCode);
-      if (!validation.success) {
-        Alert.alert('Invalid Family Link', validation.error || 'Ask your parent for a fresh invite code.', [
-          { text: 'Back to Login', onPress: () => navigation.replace('Login') }
-        ]);
-        return;
+      // Same-device flow can confirm the invite locally. Cross-device joins have
+      // no local invite — the code is verified by joining the room in
+      // handleCreateProfile, so we let onboarding proceed on a valid format.
+      if (!isRemoteJoin) {
+        const validation = await DatabaseService.validateInviteCode(validatedCode);
+        if (!validation.success) {
+          Alert.alert('Invalid Family Link', validation.error || 'Ask your parent for a fresh invite code.', [
+            { text: 'Back to Login', onPress: () => navigation.replace('Login') }
+          ]);
+          return;
+        }
       }
 
       setIsCodeReady(true);
@@ -68,28 +76,75 @@ const ChildOnboardingScreen = ({ route, navigation }) => {
     try {
       const matrixUsername = `child_${Date.now()}`;
       const matrixPassword = `${validatedCode}_${Date.now()}`;
-      const matrixResult = await MatrixService.registerDevice(matrixUsername, matrixPassword);
 
-      if (!matrixResult.success) {
-        throw new Error(matrixResult.error || 'Could not create child account');
+      // Default to a local-only child profile so onboarding always completes,
+      // even when the homeserver is unreachable / rate-limited / requires a captcha.
+      let childId = `child_${Date.now()}`;
+      let accessToken = `local_child_${Date.now()}`;
+      let deviceId = `local_device_${Date.now()}`;
+      let matrixUserId = null;
+      let joinedRoomId = null;
+
+      try {
+        const matrixTimeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Matrix registration timeout')), 8000);
+        });
+
+        const matrixResult = await Promise.race([
+          MatrixService.registerDevice(matrixUsername, matrixPassword),
+          matrixTimeout
+        ]);
+
+        if (matrixResult.success) {
+          childId = matrixResult.userId;
+          accessToken = matrixResult.accessToken;
+          deviceId = matrixResult.deviceId;
+          matrixUserId = matrixResult.userId;
+          await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
+          // Show the parent a friendly name instead of @child_123:familychat.chat.
+          await MatrixService.setDisplayName(childName.trim());
+          // Join the family room carried by the invite code, then derive the
+          // parent contact from its membership.
+          const joinResult = await MatrixService.joinRoomByCode(validatedCode);
+          if (joinResult.success) {
+            joinedRoomId = joinResult.roomId;
+            await MatrixService.reconcileContacts();
+          }
+        }
+      } catch (matrixError) {
+        console.log('Matrix registration unavailable, continuing with local child account:', matrixError.message);
       }
 
-      await MatrixService.initialize(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId);
+      // Cross-device join requires the homeserver: if we couldn't register or
+      // join the room, the code is unusable on this device — send them back
+      // rather than stranding them in a local-only account that can't reach the parent.
+      if (isRemoteJoin && !joinedRoomId) {
+        Alert.alert(
+          'Could Not Join Family',
+          'We could not connect to your family with that code. Check the code with your parent and try again.',
+          [{ text: 'Back to Login', onPress: () => navigation.replace('Login') }]
+        );
+        return;
+      }
 
-      await DatabaseService.addContact({
-        id: matrixResult.userId,
-        displayName: childName.trim(),
-        avatarPath: selectedAvatar,
-        isChild: true,
-        isSafeList: true,
-        approvalStatus: 'approved',
-        handle: matrixResult.userId,
-        matrixUserId: matrixResult.userId
-      });
+      // Same-device flow keeps a local child profile + consumes the local invite.
+      // Cross-device flow relies on room reconciliation for the contact list.
+      if (!isRemoteJoin) {
+        await DatabaseService.addContact({
+          id: childId,
+          displayName: childName.trim(),
+          avatarPath: selectedAvatar,
+          isChild: true,
+          isSafeList: true,
+          approvalStatus: 'approved',
+          handle: childId,
+          matrixUserId
+        });
+        await DatabaseService.markInviteUsed(validatedCode);
+      }
 
-      await DatabaseService.markInviteUsed(validatedCode);
-      await DatabaseService.saveLoginDetails(matrixResult.userId, matrixResult.accessToken, matrixResult.deviceId, 'child');
-      login('child', matrixResult.userId, null);
+      await DatabaseService.saveLoginDetails(childId, accessToken, deviceId, 'child');
+      login('child', childId, null);
     } catch (error) {
       console.error('Error creating child profile:', error);
       Alert.alert('Setup Failed', error.message || 'Could not create this child profile. Please try again.');

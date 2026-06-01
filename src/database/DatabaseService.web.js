@@ -53,13 +53,21 @@ class DatabaseService {
         handle: contact.handle || null,
         parent_id: contact.parentId ?? contact.parent_id ?? null,
         matrix_user_id: contact.matrixUserId ?? contact.matrix_user_id ?? null,
+        matrix_room_id: contact.matrixRoomId ?? contact.matrix_room_id ?? null,
         created_at: contact.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
 
       const existingIndex = contacts.findIndex(item => item.id === newContact.id);
       if (existingIndex >= 0) {
-        contacts[existingIndex] = { ...contacts[existingIndex], ...newContact };
+        // Preserve an already-known room/matrix id when this write omits it, so a
+        // roomless re-add (e.g. onboarding) can't wipe a reconciled family room.
+        contacts[existingIndex] = {
+          ...contacts[existingIndex],
+          ...newContact,
+          matrix_user_id: newContact.matrix_user_id ?? contacts[existingIndex].matrix_user_id,
+          matrix_room_id: newContact.matrix_room_id ?? contacts[existingIndex].matrix_room_id
+        };
       } else {
         contacts.push(newContact);
       }
@@ -89,7 +97,8 @@ class DatabaseService {
         approval_status: contact.approvalStatus || contact.approval_status || (isSafeList ? 'approved' : 'blocked'),
         handle: contact.handle || contact.handle === '' ? contact.handle : contacts[index].handle,
         parent_id: contact.parentId || contacts[index].parent_id,
-        matrix_user_id: contact.matrixUserId,
+        matrix_user_id: contact.matrixUserId ?? contacts[index].matrix_user_id,
+        matrix_room_id: contact.matrixRoomId ?? contact.matrix_room_id ?? contacts[index].matrix_room_id,
         updated_at: new Date().toISOString()
       };
       this.write(KEYS.contacts, contacts);

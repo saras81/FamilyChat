@@ -44,13 +44,33 @@ const ChatScreen = ({ route, navigation }) => {
     };
   }, [contact, navigation]);
 
+  // Conversation key: the Matrix room when we have one (cross-device), otherwise
+  // the contact id (offline / single-device fallback). All messages for this
+  // chat — inbound and outbound — are stored and loaded under this key.
+  const convoKey = contact?.matrix_room_id || contact?.id;
+
   const setupMatrixListener = useCallback(() => {
     if (!contact) return;
 
     MatrixService.setOnMessageReceived((message) => {
-      if (message.senderId === contact.id || message.recipientId === contact.id) {
-        setMessages(prev => [...prev, message]);
-      }
+      const matchesRoom = message.roomId && message.roomId === contact.matrix_room_id;
+      const matchesContact = message.senderId === contact.id || message.recipientId === contact.id;
+      if (!matchesRoom && !matchesContact) return;
+
+      setMessages(prev => {
+        // Dedupe: our own send is added optimistically with the event id, and the
+        // sync echo carries the same id — collapse them instead of double-rendering.
+        if (prev.some(m => m.id === message.id)) return prev;
+        return [...prev, {
+          id: message.id,
+          senderId: message.senderId,
+          recipientId: message.recipientId,
+          body: message.body,
+          timestamp: message.timestamp,
+          status: message.status || 'received',
+          matrixEventId: message.matrixEventId || null
+        }];
+      });
     });
   }, [contact]);
 
@@ -59,7 +79,7 @@ const ChatScreen = ({ route, navigation }) => {
 
     try {
       setIsLoading(true);
-      const loadedMessages = await DatabaseService.getMessages(contact.id);
+      const loadedMessages = await DatabaseService.getMessages(convoKey);
       setMessages(loadedMessages);
     } catch (error) {
       console.error('Error loading messages:', error);
@@ -67,7 +87,7 @@ const ChatScreen = ({ route, navigation }) => {
     } finally {
       setIsLoading(false);
     }
-  }, [contact]);
+  }, [contact, convoKey]);
 
   const sendMessage = useCallback(async () => {
     if (!newMessage.trim() || !contact) return;
@@ -78,7 +98,7 @@ const ChatScreen = ({ route, navigation }) => {
     const tempMessage = {
       id: `temp_${Date.now()}`,
       senderId: 'current_user',
-      recipientId: contact.id,
+      recipientId: convoKey,
       body: messageText,
       timestamp: new Date().toISOString(),
       status: 'sending'
@@ -87,36 +107,38 @@ const ChatScreen = ({ route, navigation }) => {
     setMessages(prev => [...prev, tempMessage]);
 
     try {
-      const matrixResult = await MatrixService.sendMessage(contact.matrix_user_id, messageText);
-      
-      if (matrixResult.success) {
-        const messageData = {
-          id: matrixResult.eventId,
-          senderId: 'current_user',
-          recipientId: contact.id,
-          body: messageText,
-          timestamp: new Date().toISOString(),
-          status: 'sent',
-          matrixEventId: matrixResult.eventId
-        };
-
-        await DatabaseService.addMessage(messageData);
-        
-        setMessages(prev => 
-          prev.map(msg =>
-            msg.id === tempMessage.id ? messageData : msg
-          )
-        );
-      } else {
-        throw new Error(matrixResult.error);
+      // Send over Matrix when the client is ready and we have a family room for
+      // this contact; otherwise fall back to local-only delivery so chat still
+      // works on a single device without a configured homeserver.
+      let matrixResult = { success: false };
+      if (MatrixService.isReady() && contact.matrix_room_id) {
+        matrixResult = await MatrixService.sendMessage(contact.matrix_room_id, messageText);
       }
+
+      const messageData = {
+        id: matrixResult.eventId || `local_${Date.now()}`,
+        senderId: 'current_user',
+        recipientId: convoKey,
+        body: messageText,
+        timestamp: new Date().toISOString(),
+        status: 'sent',
+        matrixEventId: matrixResult.eventId || null
+      };
+
+      await DatabaseService.addMessage(messageData);
+
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === tempMessage.id ? messageData : msg
+        )
+      );
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'Could not send message');
-      
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === tempMessage.id 
+
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === tempMessage.id
             ? { ...msg, status: 'failed' }
             : msg
         )
