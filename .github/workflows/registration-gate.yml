@@ -1,0 +1,50 @@
+name: registration-gate
+
+# Standing live guard for the homeserver registration lockdown. Deliberately
+# separate from the required offline e2e smoke (e2e.yml): that lane is offline
+# and gates merges, this one hits the live Synapse and must NOT couple PRs to
+# prod uptime. So it runs on a schedule + manual dispatch only — never on
+# push/pull_request.
+#
+# Runs e2e-registration-gate.mjs, which asserts the lockdown holds: every
+# registration flow requires m.login.registration_token, anonymous m.login.dummy
+# is rejected, and a bogus token is rejected (tests 1-3 — no secret needed).
+# If the EXPO_PUBLIC_REG_TOKEN secret is present it also proves the positive path
+# (test 4: staged token+dummy → real syt_ token); if absent the test skips it.
+
+on:
+  schedule:
+    - cron: '17 7 * * *'   # 07:17 UTC daily, off the top-of-hour congestion
+  workflow_dispatch:
+    inputs:
+      homeserver_url:
+        description: 'Override homeserver URL (blank = src/config.js default)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Live registration-gate guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The test is pure global fetch with zero imports — no npm ci, no Playwright.
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run registration-gate e2e
+        run: node e2e-registration-gate.mjs
+        env:
+          # Manual override wins; otherwise fall back to the script default.
+          HOMESERVER_URL: ${{ github.event.inputs.homeserver_url }}
+          # Optional: set this repo secret to also exercise the positive path.
+          # Absent → resolves to empty → the test skips test 4 (still passes 1-3).
+          EXPO_PUBLIC_REG_TOKEN: ${{ secrets.EXPO_PUBLIC_REG_TOKEN }}
