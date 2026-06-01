@@ -12,6 +12,11 @@
 // Set E2E_URL to point at any deployment instead of the local dev server, e.g.
 //   E2E_URL=https://familychat-demo.vercel.app node e2e-cross-device.mjs
 // to prove the SHIPPED bundle (homeserver baked in at build time) end-to-end.
+//
+// The homeserver gates registration behind a token (registration_requires_token).
+// The deployed bundle carries it (EXPO_PUBLIC_REG_TOKEN baked in at build time),
+// so E2E_URL runs need nothing extra. For the LOCAL dev server, start it with
+// EXPO_PUBLIC_REG_TOKEN set, or the app can't register against the gated server.
 import { chromium } from 'playwright';
 
 const URL = process.env.E2E_URL || 'http://localhost:8099';

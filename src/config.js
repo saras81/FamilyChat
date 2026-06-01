@@ -15,6 +15,17 @@ export const HOMESERVER_URL =
 export const HOMESERVER_NAME =
   process.env.EXPO_PUBLIC_HOMESERVER_NAME || 'familychat.chat';
 
+// Registration token for token-gated homeservers (Synapse `registration_requires_token`).
+// Our Railway Synapse requires a token so anonymous bots that scan for open
+// homeservers can't create accounts; the app presents this during the
+// `m.login.registration_token` UIA stage. Empty by default, which keeps the app
+// working against a homeserver that allows open registration (the token stage is
+// simply absent from the flow). Baked into the deployed bundle via
+// EXPO_PUBLIC_REG_TOKEN at build time; deliberately NOT committed — it is
+// low-secret (extractable from any client bundle, its only job is to defeat
+// automated discovery), so it lives in the build env, not the repo.
+export const REG_TOKEN = process.env.EXPO_PUBLIC_REG_TOKEN || '';
+
 // Room alias localpart for a given invite code. The 6-char code is the shared
 // secret: anyone who knows it can resolve and join the family room, nobody who
 // doesn't can. Lowercased because Matrix alias localparts are case-sensitive and

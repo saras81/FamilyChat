@@ -1,7 +1,7 @@
 import * as Matrix from 'matrix-js-sdk';
 import { AppState } from 'react-native';
 import DatabaseService from '../database/DatabaseService';
-import { HOMESERVER_URL, roomAliasForCode, roomAliasLocalpart } from '../config';
+import { HOMESERVER_URL, REG_TOKEN, roomAliasForCode, roomAliasLocalpart } from '../config';
 
 // A family room is one whose canonical (or alt) alias starts with this prefix.
 // Both parent (create) and child (join) derive the alias from the invite code,
@@ -325,23 +325,56 @@ class MatrixService {
         baseUrl: HOMESERVER_URL
       });
 
+      // Drive the registration User-Interactive Auth (UIA) flow generically:
+      // probe for the required stages, then satisfy whatever the server asks for
+      // next — carrying the session — until it returns a token (success). The
       // matrix-js-sdk signature is register(username, password, sessionId, auth).
-      // Most servers accept the dummy stage directly; some first reply 401 with a
-      // UIA session id, so retry that single stage carrying the session.
-      const attempt = (sessionId) =>
-        tempClient.register(username, password, sessionId, {
-          type: 'm.login.dummy',
-          ...(sessionId ? { session: sessionId } : {})
-        });
+      //
+      // This handles BOTH server postures with one code path:
+      //   • open registration         → flows: [["m.login.dummy"]]
+      //   • registration_requires_token → flows: [["m.login.registration_token",
+      //                                            "m.login.dummy"]]
+      // so the same client bundle works whether or not the homeserver gates
+      // registration behind a token (our Railway Synapse does, to keep anonymous
+      // bots out — see REG_TOKEN in config).
+      const authFor = (stage, session) => {
+        const base = session ? { session } : {};
+        if (stage === 'm.login.registration_token') {
+          if (!REG_TOKEN) {
+            throw new Error('homeserver requires a registration token but none is configured (EXPO_PUBLIC_REG_TOKEN)');
+          }
+          return { ...base, type: 'm.login.registration_token', token: REG_TOKEN };
+        }
+        return { ...base, type: 'm.login.dummy' };
+      };
 
-      let result;
-      try {
-        result = await attempt(null);
-      } catch (err) {
-        const session = err?.data?.session;
-        if (!session) throw err;
-        result = await attempt(session);
+      let result = null;
+      let session = null;
+      let stage = null; // null on the first pass = bare probe to discover the flow
+      for (let i = 0; i < 6; i++) {
+        try {
+          const auth = stage === null ? (session ? { session } : {}) : authFor(stage, session);
+          result = await tempClient.register(username, password, session, auth);
+          break; // 200 → registered
+        } catch (err) {
+          const data = err?.data;
+          if (!data?.session || !Array.isArray(data.flows)) throw err; // not a UIA challenge
+          session = data.session;
+          const completed = data.completed || [];
+          // Prefer a flow whose remaining stages we can actually satisfy
+          // (dummy / registration_token); fall back to the first offered flow.
+          const flow =
+            data.flows.find((f) =>
+              (f.stages || []).every(
+                (s) => s === 'm.login.dummy' || s === 'm.login.registration_token'
+              )
+            ) || data.flows[0];
+          const next = (flow.stages || []).find((s) => !completed.includes(s));
+          if (!next) throw err; // can't satisfy what's left (e.g. recaptcha/email)
+          stage = next;
+        }
       }
+      if (!result) throw new Error('registration UIA did not complete after staged auth');
 
       return {
         success: true,

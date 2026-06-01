@@ -58,7 +58,12 @@ trusted_key_servers: []
 suppress_key_server_warning: true
 report_stats: false
 enable_registration: true
-enable_registration_without_verification: true
+# Registration is gated behind a token (minted via the admin API, carried by the
+# app as EXPO_PUBLIC_REG_TOKEN). This replaces open
+# enable_registration_without_verification so anonymous bots that scan for open
+# Matrix homeservers can't create accounts, while the app's own onboarding still
+# self-serves by presenting the token in the m.login.registration_token UIA stage.
+registration_requires_token: true
 YAML
 
 cat > /tmp/log.config <<'LOGCFG'
